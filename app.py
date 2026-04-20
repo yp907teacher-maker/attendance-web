@@ -3,33 +3,32 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 
-# 1. 網頁基本設定
-st.set_page_config(page_title="學生點名進度系統", layout="centered")
+st.set_page_config(page_title="學生點名進度系統-月份版", layout="centered")
 
-# 2. 建立 Google Sheets 連線
 conn = st.connection("gsheets", type=GSheetsConnection)
-
-# 3. 你的專屬試算表網址
 URL = "https://docs.google.com/spreadsheets/d/1ThX8dzMdz-JRCIked4ad3YC8s8BMfipdjKDwSrkZpeM/edit?usp=sharing"
 
-# 4. 讀取資料
+# 讀取資料
 try:
-    # ttl=0 確保不使用快取，每次重新整理都會抓取最新資料
     df = conn.read(spreadsheet=URL, ttl=0)
-    
-    # 強制格式化資料，確保運算不會出錯
+    # 確保基本格式
     df['學生姓名'] = df['學生姓名'].astype(str)
     for col in ['總堂數', '已上堂數', '缺席次數', '已補課次數']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-    
 except Exception as e:
-    st.error("⚠️ 目前無法連線至 Google 試算表")
-    st.info("請檢查以下關鍵點：\n1. 試算表是否已「共用」給 `json-685@atomic-legacy-493918-j7.iam.gserviceaccount.com` 並設為「編輯者」？\n2. Streamlit Secrets 內容是否正確？\n3. 試算表首列標題是否正確（學生姓名、總堂數、已上堂數、缺席次數、已補課次數、點名紀錄）。")
+    st.error("⚠️ 無法連線至 Google 試算表，請檢查權限與標題格式。")
     st.stop()
 
-st.title("🍎 點名與補課進度管理")
+st.title("🍎 點名與補課管理 (月份切換版)")
 
-# --- 第一區：點名操作介面 ---
+# --- 月份選擇器 ---
+current_month = datetime.now().strftime("%m")
+selected_month = st.sidebar.selectbox("📅 選擇統計月份", 
+    options=["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"],
+    index=int(current_month)-1
+)
+
+# --- 第一區：點名操作 ---
 with st.expander("📝 進行點名 / 新增學生"):
     name_list = [""] + list(df['學生姓名'].unique())
     name = st.selectbox("選擇學生", options=name_list)
@@ -38,80 +37,82 @@ with st.expander("📝 進行點名 / 新增學生"):
     
     col_op1, col_op2 = st.columns(2)
     with col_op1:
-        total_lessons = st.number_input("本月總堂數", min_value=1, value=8)
+        total_lessons = st.number_input("該月預計總堂數", min_value=1, value=8)
         status = st.selectbox("狀態", ["出席", "缺席", "補課"])
     with col_op2:
         date_val = st.date_input("點名日期", datetime.now())
 
-    # 使用最新的 width='stretch' 語法
     if st.button("提交並同步雲端", width='stretch'):
         if name:
             date_str = date_val.strftime("%m-%d")
             
-            # 如果是新學生，建立新資料列
             if name not in df['學生姓名'].values:
-                new_data = {
-                    '學生姓名': name, '總堂數': total_lessons, 
-                    '已上堂數': 0, '缺席次數': 0, '已補課次數': 0, '點名紀錄': ""
-                }
+                new_data = {'學生姓名': name, '總堂數': total_lessons, '已上堂數': 0, '缺席次數': 0, '已補課次數': 0, '點名紀錄': ""}
                 df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
             
             idx = df[df['學生姓名'] == name].index[0]
             
-            # 自動計算邏輯
-            if status == "出席":
-                df.at[idx, '已上堂數'] += 1
-            elif status == "缺席":
-                df.at[idx, '缺席次數'] += 1
+            # 更新邏輯
+            if status == "出席": df.at[idx, '已上堂數'] += 1
+            elif status == "缺席": df.at[idx, '缺席次數'] += 1
             elif status == "補課":
-                # 檢查是否有缺席紀錄可以補
                 if df.at[idx, '缺席次數'] > df.at[idx, '已補課次數']:
                     df.at[idx, '已補課次數'] += 1
                     df.at[idx, '已上堂數'] += 1
                 else:
-                    st.error("⚠️ 此學生目前沒有缺席紀錄可供補課！")
-                    st.stop()
+                    st.error("⚠️ 補課額度不足！"); st.stop()
             
-            # 更新日期紀錄字串
             old_rec = str(df.at[idx, '點名紀錄'])
             new_rec = f"{date_str}({status})"
             df.at[idx, '點名紀錄'] = new_rec if old_rec in ["nan", ""] else f"{old_rec}, {new_rec}"
             
-            # 寫回 Google Sheets
             conn.update(spreadsheet=URL, data=df)
-            st.success(f"✅ {name} 的紀錄已成功同步！")
+            st.success(f"✅ {name} 紀錄已同步！")
             st.rerun()
 
 st.divider()
 
-# --- 第二區：你要的核心統計顯示 ---
-st.subheader("📊 目前進度統計")
+# --- 第二區：按月份統計邏輯 ---
+st.subheader(f"📊 {selected_month} 月份進度統計")
+
+def count_month_status(record_str, month, target_status):
+    """從歷史紀錄字串中，計算特定月份與狀態的次數"""
+    if not record_str or record_str == "nan": return 0
+    records = record_str.split(", ")
+    count = 0
+    for r in records:
+        if r.startswith(f"{month}-") and f"({target_status})" in r:
+            count += 1
+    return count
 
 if not df.empty:
-    # 計算額外統計欄位
-    df['待補課'] = df['缺席次數'] - df['已補課次數']
-    df['剩餘堂數'] = df['總堂數'] - df['已上堂數']
+    # 建立一個暫時的統計表，只包含當月數據
+    monthly_df = df.copy()
+    monthly_df['當月出席'] = monthly_df['點名紀錄'].apply(lambda x: count_month_status(x, selected_month, "出席"))
+    monthly_df['當月補課'] = monthly_df['點名紀錄'].apply(lambda x: count_month_status(x, selected_month, "補課"))
+    monthly_df['當月缺席'] = monthly_df['點名紀錄'].apply(lambda x: count_month_status(x, selected_month, "缺席"))
     
-    search_name = st.selectbox("🔍 查詢特定學生狀況", options=["所有學生"] + list(df['學生姓名'].unique()))
+    # 當月總上課數 = 當月出席 + 當月補課
+    monthly_df['已上堂數'] = monthly_df['當月出席'] + monthly_df['當月補課']
+    monthly_df['待補課'] = monthly_df['當月缺席'] - monthly_df['當月補課']
+    monthly_df['剩餘堂數'] = monthly_df['總堂數'] - monthly_df['已上堂數']
+
+    search_name = st.selectbox("🔍 查詢學生", options=["所有學生"] + list(df['學生姓名'].unique()))
     
     if search_name == "所有學生":
-        # 顯示全體學生的精簡統計表
         st.dataframe(
-            df[['學生姓名', '已上堂數', '待補課', '剩餘堂數']], 
-            width='stretch',
-            hide_index=True
+            monthly_df[['學生姓名', '已上堂數', '待補課', '剩餘堂數']], 
+            width='stretch', hide_index=True
         )
     else:
-        # 顯示個人化大卡片統計
-        row = df[df['學生姓名'] == search_name].iloc[0]
+        row = monthly_df[monthly_df['學生姓名'] == search_name].iloc[0]
         c1, c2, c3 = st.columns(3)
-        c1.metric("已上堂數", f"{int(row['已上堂數'])} 堂")
-        # 如果有待補課，delta 會顯示提示色
-        c2.metric("待補課次數", f"{int(row['待補課'])} 次", 
-                  delta=f"{int(row['待補課'])} 次需補課" if row['待補課'] > 0 else None,
-                  delta_color="inverse")
-        c3.metric("剩餘堂數", f"{int(row['剩餘堂數'])} 堂")
+        c1.metric("當月已上", f"{int(row['已上堂數'])} 堂")
+        c2.metric("待補課", f"{int(row['待補課'])} 次", 
+                  delta=f"{int(row['待補課'])} 次" if row['待補課'] > 0 else None, delta_color="inverse")
+        c3.metric("月剩餘", f"{int(row['剩餘堂數'])} 堂")
         
-        st.write(f"📌 **歷史詳細紀錄：** {row['點名紀錄']}")
-else:
-    st.info("目前雲端資料庫中尚無學生資料。")
+        # 過濾出該月份的歷史明細顯示
+        all_rec = str(row['點名紀錄']).split(", ")
+        month_rec = [r for r in all_rec if r.startswith(f"{selected_month}-")]
+        st.write(f"📌 **{selected_month} 月明細：** {', '.join(month_rec) if month_rec else '無紀錄'}")
