@@ -40,11 +40,13 @@ with st.sidebar:
 
 # --- 核心邏輯：將流水帳轉為當月統計表 ---
 if not raw_df.empty:
-    # 轉換日期格式以便過濾
-    raw_df['日期'] = pd.to_datetime(raw_df['日期']).dt.strftime('%m')
-    # 過濾當月資料
-    monthly_df = raw_df[raw_df['日期'] == selected_month]
+    calc_df = raw_df.copy()
+    # 加上 errors='coerce'，遇到無法轉換的文字會變成 NaT (空值) 而不報錯
+    calc_df['日期'] = pd.to_datetime(calc_df['日期'], errors='coerce')
+    # 移除日期轉換失敗的列，避免後續計算錯誤
+    calc_df = calc_df.dropna(subset=['日期'])
     
+    calc_df['月份'] = calc_df['日期'].dt.strftime('%m')ㄈ
     # 依學生進行群組統計
     stats = monthly_df.groupby(['學生姓名', '班別']).agg(
         出席=('狀態', lambda x: (x == '出席').sum()),
