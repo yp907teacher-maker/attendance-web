@@ -38,38 +38,35 @@ URL = "https://docs.google.com/spreadsheets/d/1ThX8dzMdz-JRCIked4ad3YC8s8BMfipdj
 # 3. 讀取資料與防錯
 try:
     raw_df = conn.read(spreadsheet=URL, ttl=0)
-    # 如果試算表完全空白，初始化欄位
     if raw_df is None or raw_df.empty or '日期' not in raw_df.columns:
         raw_df = pd.DataFrame(columns=['日期', '學生姓名', '班別', '狀態', '點名者', '當月總堂數'])
 except Exception:
-    st.error("⚠️ 系統連線異常，請檢查試算表權限或 Secrets 設定。")
+    st.error("⚠️ 系統連線異常，請檢查試算表權限。")
     st.stop()
 
 # --- 側邊欄控制 ---
 with st.sidebar:
     st.header("⚙️ 系統選單")
+    # 修改點名者名單為 教練1~5
+    staff_list = ["教練1", "教練2", "教練3", "教練4", "教練5"]
+    current_user = st.selectbox("🙋 當前點名者", staff_list)
+    
+    st.divider()
+    
     selected_month = st.selectbox("📅 統計月份", [f"{i:02d}" for i in range(1, 13)], 
                                   index=int(datetime.now().strftime("%m")) - 1)
     view_class = st.radio("👥 顯示班別", ["全部", "基礎班", "競技班"])
-    # 設定老師名單
-    staff_list = ["老師A", "老師B", "教練C", "教練D"]
-    current_user = st.selectbox("🙋 當前點名者", staff_list)
 
 # --- 數據運算：流水帳轉月統計表 ---
 if not raw_df.empty:
     calc_df = raw_df.copy()
-    # 強制轉換日期，失敗的轉為空值 (NaT)
     calc_df['日期_dt'] = pd.to_datetime(calc_df['日期'], errors='coerce')
-    # 移除日期無效的舊紀錄，避免當機
     calc_df = calc_df.dropna(subset=['日期_dt'])
-    
     calc_df['月份'] = calc_df['日期_dt'].dt.strftime('%m')
     
-    # 過濾當前月份資料
     monthly_data = calc_df[calc_df['月份'] == selected_month]
     
     if not monthly_data.empty:
-        # 按學生分組統計
         stats = monthly_data.groupby(['學生姓名', '班別']).agg(
             出席=('狀態', lambda x: (x == '出席').sum()),
             缺席=('狀態', lambda x: (x == '缺席').sum()),
@@ -97,7 +94,6 @@ m3.metric("待補總數", f"{int(display_df['待補'].sum()) if not display_df.e
 # --- 第二區：點名提交 ---
 with st.expander("📝 點名紀錄提交", expanded=True):
     op_class = st.radio("1. 選擇班別", ["基礎班", "競技班"], horizontal=True)
-    # 從歷史紀錄中自動抓取學生名單供選擇
     all_known_students = sorted(raw_df['學生姓名'].unique().tolist()) if not raw_df.empty else []
     name = st.selectbox("2. 學員姓名", options=[""] + all_known_students)
     if name == "":
@@ -135,7 +131,7 @@ with st.expander("📝 點名紀錄提交", expanded=True):
             updated_df = pd.concat([final_save_df, new_row], ignore_index=True)
             
             conn.update(spreadsheet=URL, data=updated_df)
-            st.success(f"✅ {name} 紀錄成功！(由 {current_user} 點名)")
+            st.success(f"✅ {name} 紀錄成功！(點名者：{current_user})")
             st.rerun()
 
 st.divider()
@@ -158,4 +154,3 @@ if search_name:
             st.write(f"🔹 {row['日期']} | {row['狀態']} | 點名者: {row['點名者']}")
     else:
         st.write("本月份尚無紀錄")
-        
