@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # 1. 網頁基本設定
 st.set_page_config(page_title="永平籃球營-專業營運系統", page_icon="🏀", layout="wide")
 
-# --- CSS 支援深色模式與自訂樣式 ---
+# --- CSS 樣式 ---
 st.markdown("""
     <style>
     .stMetric { background-color: rgba(128, 128, 128, 0.1); padding: 15px; border-radius: 10px; }
@@ -15,7 +15,6 @@ st.markdown("""
         border: none; height: 3em; font-weight: bold; width: 100%;
     }
     .stButton>button:hover { background-color: #e64a19; }
-    /* 個人卡片樣式 */
     .student-card {
         padding: 20px;
         border-radius: 15px;
@@ -55,10 +54,9 @@ if not raw_df.empty:
     calc_df['日期_dt'] = pd.to_datetime(calc_df['日期'], errors='coerce')
     calc_df = calc_df.dropna(subset=['日期_dt'])
     
-    # 全歷史數據 (跨班共享)
+    # 全歷史數據 (認人不認班，計算共享額度)
     total_stats_per_person = calc_df.groupby('學生姓名').apply(lambda x: pd.Series({
         '總出席': ((x['狀態'] == '出席') | (x['狀態'] == '補課')).sum(),
-        '全課表總私假': ((x['狀態'] == '缺席') & (x['假別備註'].str.contains('私假', na=False))).sum(),
         '最後模式': x['收費模式'].iloc[-1],
         '最後班別': x['班別'].iloc[-1]
     }), include_groups=False).reset_index()
@@ -81,7 +79,7 @@ else:
     stats = pd.DataFrame()
 
 # --- 介面顯示 ---
-st.title("永平籃球營點名系統 V3.4")
+st.title("永平籃球營點名系統 V3.5")
 
 # --- 點名提交 ---
 with st.expander("📝 快速點名 / 請假登記", expanded=False):
@@ -91,7 +89,9 @@ with st.expander("📝 快速點名 / 請假登記", expanded=False):
         all_names = sorted(raw_df['學生姓名'].unique().tolist()) if not raw_df.empty else []
         name = st.selectbox("2. 學員姓名", options=[""] + all_names)
         if name == "": name = st.text_input("或輸入新學員姓名")
-        mode = st.selectbox("3. 收費模式", ["一期(7-8天)", "任選10堂", "單堂體驗"])
+        
+        # 修正後的收費模式選項
+        mode = st.selectbox("3. 收費模式", ["一期(8天)", "一期(7天)", "任選10堂", "單堂體驗"])
     with col2:
         date_val = st.date_input("4. 點名日期", datetime.now())
         status = st.selectbox("5. 今日狀態", ["出席", "缺席", "補課"])
@@ -109,16 +109,15 @@ with st.expander("📝 快速點名 / 請假登記", expanded=False):
             }])
             updated_df = pd.concat([raw_df, new_row], ignore_index=True)
             conn.update(spreadsheet=URL, data=updated_df)
-            st.success(f"✅ 紀錄完成！")
+            st.success(f"✅ {name} 紀錄完成！")
             st.rerun()
 
 st.divider()
 
 # --- 數據報表：個人條列式卡片 ---
-st.subheader(f"📅 {selected_month} 月份學員進度條列")
+st.subheader(f"📅 {selected_month} 月份學員進度報告")
 
 if not stats.empty:
-    # 根據班別篩選
     display_stats = stats if view_class == "全部" else stats[stats['本月上課班別'].str.contains(view_class)]
     
     if display_stats.empty:
@@ -126,7 +125,6 @@ if not stats.empty:
     else:
         for _, row in display_stats.iterrows():
             with st.container():
-                # 使用卡片式佈局
                 st.markdown(f"""
                 <div class="student-card">
                     <span style="font-size: 1.2em; font-weight: bold;">👤 {row['學生姓名']}</span> 
@@ -140,39 +138,50 @@ if not stats.empty:
                 c2.write(f"⚠️ **本月缺席**：{int(row['月缺席'])} 次")
                 c3.write(f"🩹 **本月補課**：{int(row['月補課'])} 次")
                 
-                # 針對任選 10 堂的特別顯示
-                if row['最後模式'] == "任選10堂":
-                    left = 10 - int(row['總出席'])
-                    color = "red" if left <= 2 else "green"
-                    c4.markdown(f"🔥 **剩餘額度**：<span style='color:{color}; font-weight:bold; font-size:1.2em;'>{left}</span> / 10 堂", unsafe_allow_html=True)
+                # 自動判斷模式並計算剩餘堂數
+                current_mode = row['最後模式']
+                total_attended = int(row['總出席'])
+                
+                if current_mode == "任選10堂":
+                    base = 10
+                elif current_mode == "一期(8天)":
+                    base = 8
+                elif current_mode == "一期(7天)":
+                    base = 7
                 else:
-                    c4.write(f"📝 **模式**：{row['最後模式']}")
+                    base = None
+                
+                if base:
+                    left = base - total_attended
+                    color = "red" if left <= 1 else "green"
+                    c4.markdown(f"🔥 **剩餘額度**：<span style='color:{color}; font-weight:bold; font-size:1.2em;'>{left}</span> / {base} 堂", unsafe_allow_html=True)
+                else:
+                    c4.write(f"📝 **模式**：{current_mode}")
+
 else:
     st.info("尚無統計資料。")
 
 st.divider()
 
-# --- 追蹤與預警 (保留原本細查功能) ---
-st.subheader("🔍 詳細請假追蹤")
-search_name = st.selectbox("選擇學員查看補課效期", options=[""] + all_names)
+# --- 詳細查詢 (保留底部功能) ---
+search_name = st.selectbox("🔍 選擇學員查看詳細歷史與補課效期", options=[""] + all_names)
 if search_name:
     p_df = raw_df[raw_df['學生姓名'] == search_name].copy()
     p_df['日期_dt'] = pd.to_datetime(p_df['日期'], errors='coerce')
     
     col_a, col_b = st.columns(2)
     with col_a:
-        st.write("**📌 缺席紀錄預警**")
+        st.write("**📌 補課效期預警 (4週內)**")
         absents = p_df[p_df['狀態'] == '缺席'].sort_values('日期')
         for _, row in absents.iterrows():
             deadline = row['日期_dt'] + timedelta(days=28)
             days_left = (deadline.date() - datetime.now().date()).days
             if days_left < 0:
-                st.error(f"❌ {row['日期']} ({row['班別']}) | 已過期 {abs(days_left)} 天")
+                st.error(f"❌ {row['日期']} ({row['班別']}) | 已過期")
             else:
-                st.warning(f"⚠️ {row['日期']} ({row['班別']}) | 剩餘 {days_left} 天可補")
-    
+                st.warning(f"⚠️ {row['日期']} ({row['班別']}) | 剩餘 {days_left} 天")
     with col_b:
-        st.write("**📊 全課表統計**")
+        st.write("**📊 歷史統計**")
         total_p_leave = len(p_df[(p_df['狀態'] == '缺席') & (p_df['假別備註'].str.contains('私假', na=False))])
         st.write(f"累積私假：{total_p_leave} 次")
-        if total_p_leave >= 1: st.error("⚠️ 已達補課上限")
+        st.info(f"當前模式：{p_df['收費模式'].iloc[-1]}")
