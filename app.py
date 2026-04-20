@@ -54,11 +54,10 @@ if not raw_df.empty:
     calc_df['日期_dt'] = pd.to_datetime(calc_df['日期'], errors='coerce')
     calc_df = calc_df.dropna(subset=['日期_dt'])
     
-    # 全歷史數據 (認人不認班，計算共享額度)
+    # 全歷史數據 (跨班共享)
     total_stats_per_person = calc_df.groupby('學生姓名').apply(lambda x: pd.Series({
         '總出席': ((x['狀態'] == '出席') | (x['狀態'] == '補課')).sum(),
-        '最後模式': x['收費模式'].iloc[-1],
-        '最後班別': x['班別'].iloc[-1]
+        '最後模式': x['收費模式'].iloc[-1]
     }), include_groups=False).reset_index()
 
     # 月份過濾
@@ -79,7 +78,7 @@ else:
     stats = pd.DataFrame()
 
 # --- 介面顯示 ---
-st.title("永平籃球營點名系統 V3.5")
+st.title("永平籃球營點名系統 V3.7")
 
 # --- 點名提交 ---
 with st.expander("📝 快速點名 / 請假登記", expanded=False):
@@ -89,15 +88,14 @@ with st.expander("📝 快速點名 / 請假登記", expanded=False):
         all_names = sorted(raw_df['學生姓名'].unique().tolist()) if not raw_df.empty else []
         name = st.selectbox("2. 學員姓名", options=[""] + all_names)
         if name == "": name = st.text_input("或輸入新學員姓名")
-        
-        # 修正後的收費模式選項
         mode = st.selectbox("3. 收費模式", ["一期(8天)", "一期(7天)", "任選10堂", "單堂體驗"])
     with col2:
         date_val = st.date_input("4. 點名日期", datetime.now())
         status = st.selectbox("5. 今日狀態", ["出席", "缺席", "補課"])
         note = "無"
         if status == "缺席":
-            note = st.radio("請假類別", ["病假(附收據)", "私假(本期僅限1次)", "公假", "無故缺席"], horizontal=True)
+            # 移除公假，保留核心選項
+            note = st.radio("請假類別", ["病假(附收據)", "私假(本期僅限1次)", "無故缺席"], horizontal=True)
         elif status == "補課":
             note = st.text_input("備註 (例如：補 3/1 缺課)")
 
@@ -114,7 +112,7 @@ with st.expander("📝 快速點名 / 請假登記", expanded=False):
 
 st.divider()
 
-# --- 數據報表：個人條列式卡片 ---
+# --- 數據報表：個人卡片 ---
 st.subheader(f"📅 {selected_month} 月份學員進度報告")
 
 if not stats.empty:
@@ -138,18 +136,10 @@ if not stats.empty:
                 c2.write(f"⚠️ **本月缺席**：{int(row['月缺席'])} 次")
                 c3.write(f"🩹 **本月補課**：{int(row['月補課'])} 次")
                 
-                # 自動判斷模式並計算剩餘堂數
+                # 計算剩餘堂數
                 current_mode = row['最後模式']
                 total_attended = int(row['總出席'])
-                
-                if current_mode == "任選10堂":
-                    base = 10
-                elif current_mode == "一期(8天)":
-                    base = 8
-                elif current_mode == "一期(7天)":
-                    base = 7
-                else:
-                    base = None
+                base = 10 if "10堂" in current_mode else (8 if "8天" in current_mode else (7 if "7天" in current_mode else None))
                 
                 if base:
                     left = base - total_attended
@@ -157,31 +147,37 @@ if not stats.empty:
                     c4.markdown(f"🔥 **剩餘額度**：<span style='color:{color}; font-weight:bold; font-size:1.2em;'>{left}</span> / {base} 堂", unsafe_allow_html=True)
                 else:
                     c4.write(f"📝 **模式**：{current_mode}")
-
 else:
     st.info("尚無統計資料。")
 
 st.divider()
 
-# --- 詳細查詢 (保留底部功能) ---
-search_name = st.selectbox("🔍 選擇學員查看詳細歷史與補課效期", options=[""] + all_names)
+# --- 詳細查詢 ---
+search_name = st.selectbox("🔍 選擇學員查看詳細紀錄與私假次數", options=[""] + all_names)
 if search_name:
     p_df = raw_df[raw_df['學生姓名'] == search_name].copy()
     p_df['日期_dt'] = pd.to_datetime(p_df['日期'], errors='coerce')
     
     col_a, col_b = st.columns(2)
     with col_a:
-        st.write("**📌 補課效期預警 (4週內)**")
+        st.write("**📌 補課效期追蹤 (28天)**")
         absents = p_df[p_df['狀態'] == '缺席'].sort_values('日期')
+        if absents.empty: st.write("無缺席紀錄")
         for _, row in absents.iterrows():
             deadline = row['日期_dt'] + timedelta(days=28)
             days_left = (deadline.date() - datetime.now().date()).days
             if days_left < 0:
-                st.error(f"❌ {row['日期']} ({row['班別']}) | 已過期")
+                st.error(f"❌ {row['日期']} | {row['假別備註']} (已過期)")
             else:
-                st.warning(f"⚠️ {row['日期']} ({row['班別']}) | 剩餘 {days_left} 天")
+                st.warning(f"⚠️ {row['日期']} | {row['假別備註']} (剩 {days_left} 天)")
     with col_b:
-        st.write("**📊 歷史統計**")
-        total_p_leave = len(p_df[(p_df['狀態'] == '缺席') & (p_df['假別備註'].str.contains('私假', na=False))])
-        st.write(f"累積私假：{total_p_leave} 次")
+        st.write("**📊 統計摘要**")
+        # 統計私假次數
+        private_lv = len(p_df[p_df['假別備註'].str.contains('私假', na=False)])
+        st.write(f"累積私假：{private_lv} 次")
+        if private_lv >= 1:
+            st.error("⚠️ 該學員本期私假補課已達上限 (限1次)")
+        else:
+            st.success("目前仍有私假補課名額")
+        
         st.info(f"當前模式：{p_df['收費模式'].iloc[-1]}")
