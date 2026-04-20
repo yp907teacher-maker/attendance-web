@@ -14,22 +14,22 @@ URL = "https://docs.google.com/spreadsheets/d/1ThX8dzMdz-JRCIked4ad3YC8s8BMfipdj
 
 # 4. 讀取資料
 try:
-    # 使用 ttl=0 確保不使用快取，每次都讀取最新資料
+    # ttl=0 確保不使用快取，每次重新整理都會抓取最新資料
     df = conn.read(spreadsheet=URL, ttl=0)
     
-    # 強制格式化資料，避免運算錯誤
+    # 強制格式化資料，確保運算不會出錯
     df['學生姓名'] = df['學生姓名'].astype(str)
     for col in ['總堂數', '已上堂數', '缺席次數', '已補課次數']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
 except Exception as e:
     st.error("⚠️ 目前無法連線至 Google 試算表")
-    st.info("請檢查以下三點：\n1. 是否已將試算表「共用」給 `json-685@atomic-legacy-493918-j7.iam.gserviceaccount.com` 並設為「編輯者」？\n2. Streamlit Cloud 的 Secrets 內容是否正確？\n3. 試算表的第一列標題是否包含：學生姓名、總堂數、已上堂數、缺席次數、已補課次數、點名紀錄。")
+    st.info("請檢查以下關鍵點：\n1. 試算表是否已「共用」給 `json-685@atomic-legacy-493918-j7.iam.gserviceaccount.com` 並設為「編輯者」？\n2. Streamlit Secrets 內容是否正確？\n3. 試算表首列標題是否正確（學生姓名、總堂數、已上堂數、缺席次數、已補課次數、點名紀錄）。")
     st.stop()
 
 st.title("🍎 點名與補課進度管理")
 
-# --- 第一區：點名操作 ---
+# --- 第一區：點名操作介面 ---
 with st.expander("📝 進行點名 / 新增學生"):
     name_list = [""] + list(df['學生姓名'].unique())
     name = st.selectbox("選擇學生", options=name_list)
@@ -43,11 +43,12 @@ with st.expander("📝 進行點名 / 新增學生"):
     with col_op2:
         date_val = st.date_input("點名日期", datetime.now())
 
-    if st.button("提交並同步雲端", use_container_width=True):
+    # 使用最新的 width='stretch' 語法
+    if st.button("提交並同步雲端", width='stretch'):
         if name:
             date_str = date_val.strftime("%m-%d")
             
-            # 如果是新學生，建立新列
+            # 如果是新學生，建立新資料列
             if name not in df['學生姓名'].values:
                 new_data = {
                     '學生姓名': name, '總堂數': total_lessons, 
@@ -57,56 +58,60 @@ with st.expander("📝 進行點名 / 新增學生"):
             
             idx = df[df['學生姓名'] == name].index[0]
             
-            # 更新邏輯
+            # 自動計算邏輯
             if status == "出席":
                 df.at[idx, '已上堂數'] += 1
             elif status == "缺席":
                 df.at[idx, '缺席次數'] += 1
             elif status == "補課":
+                # 檢查是否有缺席紀錄可以補
                 if df.at[idx, '缺席次數'] > df.at[idx, '已補課次數']:
                     df.at[idx, '已補課次數'] += 1
                     df.at[idx, '已上堂數'] += 1
                 else:
-                    st.error("⚠️ 此學生沒有缺席紀錄可供補課！")
+                    st.error("⚠️ 此學生目前沒有缺席紀錄可供補課！")
                     st.stop()
             
-            # 更新日期紀錄
+            # 更新日期紀錄字串
             old_rec = str(df.at[idx, '點名紀錄'])
             new_rec = f"{date_str}({status})"
             df.at[idx, '點名紀錄'] = new_rec if old_rec in ["nan", ""] else f"{old_rec}, {new_rec}"
             
             # 寫回 Google Sheets
             conn.update(spreadsheet=URL, data=df)
-            st.success(f"✅ {name} 紀錄已同步！系統重新整理中...")
+            st.success(f"✅ {name} 的紀錄已成功同步！")
             st.rerun()
 
 st.divider()
 
-# --- 第二區：核心統計統計 ---
+# --- 第二區：你要的核心統計顯示 ---
 st.subheader("📊 目前進度統計")
 
 if not df.empty:
-    # 計算衍生數據
+    # 計算額外統計欄位
     df['待補課'] = df['缺席次數'] - df['已補課次數']
     df['剩餘堂數'] = df['總堂數'] - df['已上堂數']
     
-    search_name = st.selectbox("🔍 查詢特定學生", options=["所有學生"] + list(df['學生姓名'].unique()))
+    search_name = st.selectbox("🔍 查詢特定學生狀況", options=["所有學生"] + list(df['學生姓名'].unique()))
     
     if search_name == "所有學生":
-        # 顯示精簡總表
+        # 顯示全體學生的精簡統計表
         st.dataframe(
             df[['學生姓名', '已上堂數', '待補課', '剩餘堂數']], 
-            use_container_width=True,
+            width='stretch',
             hide_index=True
         )
     else:
-        # 顯示個人圖表卡片
+        # 顯示個人化大卡片統計
         row = df[df['學生姓名'] == search_name].iloc[0]
         c1, c2, c3 = st.columns(3)
         c1.metric("已上堂數", f"{int(row['已上堂數'])} 堂")
-        c2.metric("待補課", f"{int(row['待補課'])} 次", delta_color="inverse" if row['待補課'] > 0 else "normal")
+        # 如果有待補課，delta 會顯示提示色
+        c2.metric("待補課次數", f"{int(row['待補課'])} 次", 
+                  delta=f"{int(row['待補課'])} 次需補課" if row['待補課'] > 0 else None,
+                  delta_color="inverse")
         c3.metric("剩餘堂數", f"{int(row['剩餘堂數'])} 堂")
         
-        st.write(f"📌 **歷史明細：** {row['點名紀錄']}")
+        st.write(f"📌 **歷史詳細紀錄：** {row['點名紀錄']}")
 else:
-    st.info("目前試算表內尚無學生資料。")
+    st.info("目前雲端資料庫中尚無學生資料。")
