@@ -1,0 +1,65 @@
+import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+from datetime import datetime
+
+st.set_page_config(page_title="雲端點名系統", layout="centered")
+
+# 建立 Google Sheets 連線
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# 讀取資料 (試算表網址填入你自己的)
+URL = "https://docs.google.com/spreadsheets/d/1ThX8dzMdz-JRCIked4ad3YC8s8BMfipdjKDwSrkZpeM/edit?usp=sharing"
+
+try:
+    df = conn.read(spreadsheet=URL)
+    # 強制將姓名轉字串防止報錯
+    df['學生姓名'] = df['學生姓名'].astype(str)
+except:
+    # 如果是空表，建立初始欄位
+    df = pd.DataFrame(columns=['學生姓名', '總堂數', '已上堂數', '缺席次數', '已補課次數', '點名紀錄'])
+
+st.title("?? 雲端點名系統")
+
+# 介面操作區
+with st.expander("? 進行點名/新增學生", expanded=True):
+    name = st.selectbox("選擇學生", options=[""] + list(df['學生姓名'].unique()))
+    if name == "":
+        name = st.text_input("輸入新學生姓名")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        total = st.number_input("本月總堂數", value=8)
+        status = st.selectbox("狀態", ["出席", "缺席", "補課"])
+    with col2:
+        date_val = st.date_input("日期", datetime.now())
+
+    if st.button("提交並同步至雲端"):
+        if name:
+            date_str = date_val.strftime("%m-%d")
+            # 點名邏輯處理 (同前)
+            if name not in df['學生姓名'].values:
+                new_row = {'學生姓名': name, '總堂數': total, '已上堂數': 0, '缺席次數': 0, '已補課次數': 0, '點名紀錄': ""}
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            
+            idx = df[df['學生姓名'] == name].index[0]
+            # (省略部分邏輯計算... 跟之前一樣)
+            if status == "出席": df.at[idx, '已上堂數'] += 1
+            elif status == "缺席": df.at[idx, '缺席次數'] += 1
+            elif status == "補課":
+                if df.at[idx, '缺席次數'] > df.at[idx, '已補課次數']:
+                    df.at[idx, '已補課次數'] += 1
+                    df.at[idx, '已上堂數'] += 1
+            
+            # 更新日期紀錄
+            old_rec = str(df.at[idx, '點名紀錄'])
+            df.at[idx, '點名紀錄'] = f"{date_str}({status})" if old_rec in ["nan", ""] else f"{old_rec}, {date_str}({status})"
+            
+            # 寫回 Google Sheets
+            conn.update(spreadsheet=URL, data=df)
+            st.success("? 已同步到 Google 試算表！")
+            st.rerun()
+
+st.divider()
+st.subheader("查閱即時報表")
+st.dataframe(df, use_container_width=True)
